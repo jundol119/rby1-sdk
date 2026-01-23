@@ -87,7 +87,7 @@ BASE, EE = 0, 1
 # ===============================
 # 1️⃣ 진짜 zero offset (시뮬에서만 사용)
 # ===============================
-q_offset_true = np.deg2rad([1.5, -2.0, 1.0, 0.5, -1.2, 0.8, -0.6])
+q_offset_true = np.deg2rad([0.5, -1.0, 1.0, 0.5, -0.5, 0.5, -0.6])
 
 
 # ===============================
@@ -97,13 +97,13 @@ q_cmd_list = [
     np.deg2rad([-27.5, -38.3,  68.5, -56.9,  8.9, -69.1, -41.8]),
     np.deg2rad([-10.0, -50.0,  40.0, -70.0, 20.0, -30.0, -20.0]),
     np.deg2rad([ 20.0, -30.0,  60.0, -40.0, 10.0, -80.0, -10.0]),
-    np.deg2rad([-37.5, -18.3,  68.5, -56.9,  8.9, -69.1, -41.8]),
-    np.deg2rad([ 40.0, -70.0,  40.0, -70.0, 20.0, -30.0, -20.0]),
-    np.deg2rad([ 20.0, -30.0,  60.0, -40.0, 10.0, -60.0, -10.0]),
-    np.deg2rad([ 20.0, -30.0,  60.0, -40.0, 10.0, -80.0,  10.0]),
-    np.deg2rad([-37.5, -18.3,  28.5, -56.9, 18.9,  69.1,  41.8]),
-    np.deg2rad([ 40.0, -70.0,  40.0, -30.0, 20.0, -30.0, -20.0]),
-    np.deg2rad([ 20.0, -30.0,  60.0, -10.0, 10.0, -60.0, -10.0]),
+    # np.deg2rad([-37.5, -18.3,  68.5, -56.9,  8.9, -69.1, -41.8]),
+    # np.deg2rad([ 40.0, -70.0,  40.0, -70.0, 20.0, -30.0, -20.0]),
+    # np.deg2rad([ 20.0, -30.0,  60.0, -40.0, 10.0, -60.0, -10.0]),
+    # np.deg2rad([ 20.0, -30.0,  60.0, -40.0, 10.0, -80.0,  10.0]),
+    # np.deg2rad([-37.5, -18.3,  28.5, -56.9, 18.9,  69.1,  41.8]),
+    # np.deg2rad([ 40.0, -70.0,  40.0, -30.0, 20.0, -30.0, -20.0]),
+    # np.deg2rad([ 20.0, -30.0,  60.0, -10.0, 10.0, -60.0, -10.0]),
 ]
 
 
@@ -114,7 +114,7 @@ T_cam_list = []
 
 for q_cmd in q_cmd_list:
     
-    ex4_move_to(q_cmd)
+    # ex4_move_to(q_cmd)
     q_full = robot.get_state().position.copy()
     q_full[RIGHT_ARM_IDX] = q_cmd + q_offset_true
 
@@ -123,18 +123,20 @@ for q_cmd in q_cmd_list:
     dyn_model.compute_forward_kinematics(dyn_state)
 
     T = dyn_model.compute_transformation(dyn_state, BASE, EE)
-    print(T)
+    # print("T_cam", T)
     # 작은 카메라 노이즈
     T[:3, 3] += np.random.normal(0, 0.002, 3)
 
     T_cam_list.append(T)
+    # 실제 로봇에선 여기에 카메라 측정 T값을 넣어줘야함
 
 
 # ===============================
 # 4️⃣ Calibration (unknown offset)
 # ===============================
 q_offset = np.zeros(ndof)
-MAX_ITER = 1
+MAX_ITER = 20
+
 lambda2 = 1e-3
 
 for it in range(MAX_ITER):
@@ -150,7 +152,7 @@ for it in range(MAX_ITER):
         dyn_model.compute_forward_kinematics(dyn_state)
 
         T_fk = dyn_model.compute_transformation(dyn_state, BASE, EE)
-        print(T_fk)
+        # print("T_fk", T_fk)
         T_err = np.linalg.inv(T_fk) @ T_cam
         xi = se3_log(T_err)
 
@@ -161,6 +163,7 @@ for it in range(MAX_ITER):
         g += Jr.T @ xi
 
     delta = -np.linalg.solve(H + lambda2 * np.eye(ndof), g)
+    delta = np.clip(delta, -np.deg2rad(0.5), np.deg2rad(0.5))
     q_offset += delta
 
     print(f"[{it}] |δq| = {np.linalg.norm(delta)}")
