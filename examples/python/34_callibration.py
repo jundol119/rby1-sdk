@@ -97,13 +97,13 @@ q_cmd_list = [
     np.deg2rad([-27.5, -38.3,  68.5, -56.9,  8.9, -69.1, -41.8]),
     np.deg2rad([-10.0, -50.0,  40.0, -70.0, 20.0, -30.0, -20.0]),
     np.deg2rad([ 20.0, -30.0,  60.0, -40.0, 10.0, -80.0, -10.0]),
-    # np.deg2rad([-37.5, -18.3,  68.5, -56.9,  8.9, -69.1, -41.8]),
-    # np.deg2rad([ 40.0, -70.0,  40.0, -70.0, 20.0, -30.0, -20.0]),
-    # np.deg2rad([ 20.0, -30.0,  60.0, -40.0, 10.0, -60.0, -10.0]),
-    # np.deg2rad([ 20.0, -30.0,  60.0, -40.0, 10.0, -80.0,  10.0]),
-    # np.deg2rad([-37.5, -18.3,  28.5, -56.9, 18.9,  69.1,  41.8]),
-    # np.deg2rad([ 40.0, -70.0,  40.0, -30.0, 20.0, -30.0, -20.0]),
-    # np.deg2rad([ 20.0, -30.0,  60.0, -10.0, 10.0, -60.0, -10.0]),
+    np.deg2rad([-37.5, -18.3,  68.5, -56.9,  8.9, -69.1, -41.8]),
+    np.deg2rad([ 40.0, -70.0,  40.0, -70.0, 20.0, -30.0, -20.0]),
+    np.deg2rad([ 20.0, -30.0,  60.0, -40.0, 10.0, -60.0, -10.0]),
+    np.deg2rad([ 20.0, -30.0,  60.0, -40.0, 10.0, -80.0,  10.0]),
+    np.deg2rad([-37.5, -18.3,  28.5, -56.9, 18.9,  69.1,  41.8]),
+    np.deg2rad([ 40.0, -70.0,  40.0, -30.0, 20.0, -30.0, -20.0]),
+    np.deg2rad([ 20.0, -30.0,  60.0, -10.0, 10.0, -60.0, -10.0]),
 ]
 
 
@@ -130,13 +130,11 @@ for q_cmd in q_cmd_list:
     T_cam_list.append(T)
     # 실제 로봇에선 여기에 카메라 측정 T값을 넣어줘야함
 
-
 # ===============================
-# 4️⃣ Calibration (unknown offset)
+# 4️⃣ Calibration (unknown offset) — FIXED
 # ===============================
 q_offset = np.zeros(ndof)
 MAX_ITER = 20
-
 lambda2 = 1e-3
 
 for it in range(MAX_ITER):
@@ -144,32 +142,59 @@ for it in range(MAX_ITER):
     g = np.zeros(ndof)
 
     for q_cmd, T_cam in zip(q_cmd_list, T_cam_list):
-        q_full = robot.get_state().position.copy()
-        q_full[RIGHT_ARM_IDX] = q_cmd + q_offset
 
-        dyn_state = dyn_model.make_state(["base", "ee_right"], model.robot_joint_names)
+        # ------------------------------------
+        # ✅ 선형화 기준: q_cmd (FIXED)
+        # ------------------------------------
+        q_full = robot.get_state().position.copy()
+        q_full[RIGHT_ARM_IDX] = q_cmd
+
+        dyn_state = dyn_model.make_state(
+            ["base", "ee_right"],
+            model.robot_joint_names
+        )
         dyn_state.set_q(q_full)
         dyn_model.compute_forward_kinematics(dyn_state)
 
+        # FK @ q_cmd
         T_fk = dyn_model.compute_transformation(dyn_state, BASE, EE)
-        # print("T_fk", T_fk)
+
+        # ------------------------------------
+        # ✅ Error defined at q_cmd
+        # ------------------------------------
         T_err = np.linalg.inv(T_fk) @ T_cam
-        xi = se3_log(T_err)
-
+        xi = se3_log(T_err)   # 6×1
+        # ------------------------------------
+        # ✅ Jacobian @ q_cmd
+        # ------------------------------------
         J = dyn_model.compute_body_jacobian(dyn_state, BASE, EE)
-        Jr = J[:, 7:14]
+        Jr = J[:, RIGHT_ARM_IDX]
 
+        # Normal equation accumulation
         H += Jr.T @ Jr
         g += Jr.T @ xi
 
-    delta = -np.linalg.solve(H + lambda2 * np.eye(ndof), g)
-    delta = np.clip(delta, -np.deg2rad(0.5), np.deg2rad(0.5))
+    # ------------------------------------
+    # LM solve
+    # ------------------------------------
+    delta = -np.linalg.solve(
+        H + lambda2 * np.eye(ndof),
+        g
+    )
+
+    # step limit (optional but good)
+    # delta = np.clip(
+    #     delta,
+    #     -np.deg2rad(0.1),
+    #      np.deg2rad(0.1)
+    # )
+
     q_offset += delta
 
     print(f"[{it}] |δq| = {np.linalg.norm(delta)}")
+
     if np.linalg.norm(delta) < 1e-6:
         break
-
 
 # ===============================
 # 5️⃣ 결과
