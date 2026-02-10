@@ -45,7 +45,7 @@ def se3_log(T):
         )
         v = A @ t
 
-    return np.hstack([v, w])   # (6,)
+    return np.hstack([w, v])   # (6,)
 
 
 # ===============================
