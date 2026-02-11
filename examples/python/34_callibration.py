@@ -5,6 +5,66 @@ import time
 # ===============================
 # Lie algebra utils
 # ===============================
+def adjoint(T):
+    R = T[:3,:3]
+    p = T[:3,3]
+    p_hat = np.array([
+        [0, -p[2], p[1]],
+        [p[2], 0, -p[0]],
+        [-p[1], p[0], 0]
+    ])
+    Ad = np.zeros((6,6))
+    Ad[:3,:3] = R
+    Ad[3:,3:] = R
+    Ad[3:,:3] = p_hat @ R
+    return Ad
+
+def so3_exp(w):
+    theta = np.linalg.norm(w)
+    if theta < 1e-8:
+        return np.eye(3)
+
+    k = w / theta
+    K = np.array([
+        [0, -k[2], k[1]],
+        [k[2], 0, -k[0]],
+        [-k[1], k[0], 0]
+    ])
+
+    return (
+        np.eye(3)
+        + np.sin(theta) * K
+        + (1 - np.cos(theta)) * (K @ K)
+    )
+
+
+def se3_exp(xi):
+    w = xi[:3]
+    v = xi[3:]
+
+    R = so3_exp(w)
+    theta = np.linalg.norm(w)
+
+    if theta < 1e-8:
+        V = np.eye(3)
+    else:
+        K = np.array([
+            [0, -w[2], w[1]],
+            [w[2], 0, -w[0]],
+            [-w[1], w[0], 0]
+        ]) / theta
+
+        V = (
+            np.eye(3)
+            + (1 - np.cos(theta)) / theta * K
+            + (theta - np.sin(theta)) / theta * (K @ K)
+        )
+
+    T = np.eye(4)
+    T[:3,:3] = R
+    T[:3,3] = V @ v
+    return T
+
 def so3_log(R):
     cos_theta = (np.trace(R) - 1) / 2
     cos_theta = np.clip(cos_theta, -1.0, 1.0)
@@ -67,13 +127,19 @@ ndof = len(RIGHT_ARM_IDX)
 
 BASE, EE = 0, 1
 
-
 # ===============================
 # Ground truth offset (simulation)
 # ===============================
 # q_offset_true = np.deg2rad([0.5, -1.0, 1.0, 0.5, -5.0, 0.5, 0.2])
-q_offset_true = np.deg2rad([50, -10, 10, 5, -50, 5, 2])
+q_offset_true = np.deg2rad([5, -5, 2, 5, -5, 5, 2])
+xi_cam_true = np.array([0.02, -0.04, 0.03,   # rotation
+                        0.01, 0.02, -0.015]) # translation
 
+# expected position about camera braket
+xi_cam_pose = np.array([0, 0, 0,   # rotation
+                        0, 0, 0]) # translation
+T_cam_pose = se3_exp(xi_cam_pose)
+T_cam_true = se3_exp(xi_cam_true)
 
 # ===============================
 # Command poses
@@ -100,7 +166,7 @@ def generate_random_q_list(n_samples=10, margin_ratio=0.15, seed=42):
         q_list.append(np.array(q))
     return q_list
 
-q_cmd_list = generate_random_q_list(n_samples=15)
+q_cmd_list = generate_random_q_list(n_samples=100)
 
 
 # ===============================
@@ -126,9 +192,10 @@ for q_cmd in q_cmd_list:
     dyn_model.compute_forward_kinematics(dyn_state)
 
     T_cam = dyn_model.compute_transformation(dyn_state, BASE, EE)
-    T_cam_list.append(T_cam)
-
-
+    # T_cam_list.append(T_cam)
+     
+    T_meas = T_cam @ T_cam_pose @ T_cam_true 
+    T_cam_list.append(T_meas)
 # ===============================
 # Gauss–Newton Offset Calibration
 # ===============================
@@ -136,15 +203,16 @@ max_iter = 100
 eps = 1e-3
 
 q_offset = np.zeros(ndof)
+xi_cam = np.zeros(6)
 
 for it in range(max_iter):
 
-    H = np.zeros((ndof, ndof))
-    g = np.zeros(ndof)
+    H = np.zeros((ndof+6, ndof+6))
+    g = np.zeros(ndof+6)
 
     total_err = 0.0
 
-    for q_cmd, T_cam in zip(q_cmd_list, T_cam_list):
+    for q_cmd, T_meas in zip(q_cmd_list, T_cam_list):
 
         # 🔁 재선형화 지점
         q_full = q_nominal.copy()
@@ -160,28 +228,43 @@ for it in range(max_iter):
 
         T_fk = dyn_model.compute_transformation(dyn_state, BASE, EE)
 
-        # SE(3) body error
-        # T_err = np.linalg.inv(T_fk) @ T_cam
-        # xi = se3_log(T_err)
-        T_err = T_cam @ np.linalg.inv(T_fk)
+        # ---- Camera extrinsic ----
+        T_extrinsic = se3_exp(xi_cam)
+        # ---- Full model ----
+        T_model = T_fk @ T_cam_pose @ T_extrinsic
+        
+        
+        # T_err = T_model @ np.linalg.inv(T_meas)
+        # xi = se3_log(T_err)   # space error
+        T_err =  T_meas @ np.linalg.inv(T_model) 
         xi = se3_log(T_err)   # space error
 
-        Jb = dyn_model.compute_space_jacobian(dyn_state, BASE, EE)
-        Jr = Jb[:, RIGHT_ARM_IDX]
-        xi[3:] *= 0.1
-        Jr[3:, :] *= 0.1
-
-        H += Jr.T @ Jr
-        g += Jr.T @ xi
+        Jb = dyn_model.compute_space_jacobian(dyn_state, BASE, EE) 
+        
+        # xi[3:] *= 0.1
+        # J_joint[3:, :] *= 0.1
+        # Jb[:, 7:][3:, :] *= 0.1
+        # J_joint[:, 7:][3:, :] *= 0.1
+        
+        # Camera Jacobian = Identity
+        J = np.zeros((6,13))
+        J[:, :7] = Jb[:, RIGHT_ARM_IDX]
+        # J[:, 7:] = np.eye(6)
+        J[:, 7:] = adjoint(T_fk @ T_cam_pose)
+        
+        H += J.T @ J
+        g += J.T @ xi
         total_err += np.linalg.norm(xi)
 
-    dq = np.linalg.pinv(H) @ g
-    q_offset += dq
+    
+    dx = np.linalg.pinv(H) @ g
+    q_offset += dx[:7]
+    xi_cam += dx[7:]
 
-    print(f"[Iter {it:02d}] |dq| = {np.linalg.norm(dq):.3e}, "
+    print(f"[Iter {it:02d}] |dq| = {np.linalg.norm(dx):.3e}, "
           f"|xi| = {total_err:.3e}")
 
-    if np.linalg.norm(dq) < eps:
+    if np.linalg.norm(dx) < eps:
         print("Converged.")
         break
 
@@ -189,7 +272,17 @@ for it in range(max_iter):
 # ===============================
 # Result
 # ===============================
-print("\nTrue offset [deg]:     ",
-      np.round(np.rad2deg(q_offset_true), 4))
-print("Estimated offset [deg]:",
-      np.round(np.rad2deg(q_offset), 4))
+print("\n===== Joint Offset =====")
+print("True offset [deg]:")
+print(np.round(np.rad2deg(q_offset_true), 4))
+
+print("Estimated offset [deg]:")
+print(np.round(np.rad2deg(q_offset), 4))
+
+
+print("\n===== Camera Extrinsic (xi) =====")
+print("True xi_cam:")
+print(np.round(xi_cam_true, 6))
+
+print("Estimated xi_cam:")
+print(np.round(xi_cam, 6))
