@@ -62,7 +62,7 @@ robot.enable_control_manager(False)
 
 dyn_model = robot.get_dynamics()
 
-RIGHT_ARM_IDX = model.right_arm_idx[:6]
+RIGHT_ARM_IDX = model.right_arm_idx[:7]
 ndof = len(RIGHT_ARM_IDX)
 
 BASE, EE = 0, 1
@@ -71,19 +71,21 @@ BASE, EE = 0, 1
 # ===============================
 # Ground truth offset (simulation)
 # ===============================
-q_offset_true = np.deg2rad([0.5, -1.0, 1.0, 0.5, -5.0, 0.5])
+# q_offset_true = np.deg2rad([0.5, -1.0, 1.0, 0.5, -5.0, 0.5, 0.2])
+q_offset_true = np.deg2rad([50, -10, 10, 5, -50, 5, 2])
 
 
 # ===============================
 # Command poses
 # ===============================
 joint_limits = np.array([
+    [-2.0,  2.0],
+    [-2.5,  0.0],
+    [-1.5,  1.5],
+    [-2.5,  0.0],
     [-3.141592654,  3.141592654],
-    [-3.141592654,  0.017453293],
-    [-3.141592654,  3.141592654],
-    [-2.617993878,  0.017453293],
-    [-3.141592654,  3.141592654],
-    [-1.570796327,  1.919862177],
+    [-1.570796327,  1.570796327],
+    [-1.570796327,  1.570796327]
 ])
 
 def generate_random_q_list(n_samples=10, margin_ratio=0.15, seed=42):
